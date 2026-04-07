@@ -539,6 +539,12 @@ const ParticleScene = ({ scrollState, scrollStateRef }: ParticleSceneProps) => {
 
         const clock = new THREE.Clock();
 
+        // Persistent camera state — lerped each frame so any positional discontinuity
+        // at beat or rail boundaries becomes a smooth drift rather than a hard snap.
+        const camPos = new THREE.Vector3(0, 0, 40);
+        const camLook = new THREE.Vector3(0, 0, 0);
+        const CAMERA_LERP = 0.2;
+
         const animate = () => {
           if (disposed) return;
 
@@ -564,11 +570,10 @@ const ParticleScene = ({ scrollState, scrollStateRef }: ParticleSceneProps) => {
             points.rotation.z += (0 - points.rotation.z) * 0.02;
           }
 
-          updateCamera(
+          const camTarget = updateCamera(
             activeBeat,
             localProgress,
             t,
-            camera,
             treeCenter,
             treeMin,
             treeHeight,
@@ -578,6 +583,13 @@ const ParticleScene = ({ scrollState, scrollStateRef }: ParticleSceneProps) => {
             cityCenter,
             citySize
           );
+
+          camPos.lerp(camTarget.position, CAMERA_LERP);
+          camLook.lerp(camTarget.lookAt, CAMERA_LERP);
+          camera.position.copy(camPos);
+          camera.lookAt(camLook);
+          camera.fov += (camTarget.fov - camera.fov) * 0.08;
+          camera.updateProjectionMatrix();
 
           renderer.render(scene, camera);
         };
@@ -729,41 +741,48 @@ function getMorphState(
     };
   }
 
-  const previousBeat = beats[Math.max(beatIndex - 1, 0)];
-  const sourceFormation = beatIndex === 0 ? beat.formation : previousBeat.formation;
-  const targetFormation = beat.formation;
-  const enteringNewFormation = beatIndex > 0 && sourceFormation !== targetFormation;
-
-  if (!enteringNewFormation) {
-    return { sourceFormation: targetFormation, targetFormation, progress: 1 };
+  // Tree rail (beats 9–13): drive off the continuous railProgress so formation morphs
+  // never reset to 0 at a beat boundary. Starts from "rain" to bridge seamlessly from
+  // the world rail's final formation.
+  if (beat.rail === "tree") {
+    if (railProgress < 0.14) {
+      return { sourceFormation: "rain",     targetFormation: "trunk",    progress: remapProgress(railProgress, 0,    0.14) };
+    }
+    if (railProgress < 0.22) {
+      return { sourceFormation: "trunk",    targetFormation: "trunk",    progress: 1 };
+    }
+    if (railProgress < 0.42) {
+      return { sourceFormation: "trunk",    targetFormation: "branches", progress: remapProgress(railProgress, 0.22, 0.42) };
+    }
+    if (railProgress < 0.54) {
+      return { sourceFormation: "branches", targetFormation: "branches", progress: 1 };
+    }
+    if (railProgress < 0.66) {
+      return { sourceFormation: "branches", targetFormation: "tree",     progress: remapProgress(railProgress, 0.54, 0.66) };
+    }
+    if (railProgress < 0.88) {
+      return { sourceFormation: "tree",     targetFormation: "tree",     progress: 1 };
+    }
+    return   { sourceFormation: "tree",     targetFormation: "roots",    progress: remapProgress(railProgress, 0.88, 0.98) };
   }
 
-  let start = 0.12;
-  let end = 0.88;
-
-  if (beat.cameraMode === "tunnelEntry") {
-    start = 0.16;
-    end = 0.88;
-  } else if (beat.cameraMode === "cityBurst") {
-    start = 0.14;
-    end = 0.82;
-  } else if (beat.chapterType === "transition") {
-    start = 0.16;
-    end = 0.9;
+  // Network rail (beats 14–17): same principle. Starts from "roots" to bridge from tree rail.
+  if (railProgress < 0.14) {
+    return { sourceFormation: "roots",  targetFormation: "tunnel", progress: remapProgress(railProgress, 0,    0.14) };
   }
-
-  return {
-    sourceFormation,
-    targetFormation,
-    progress: remapProgress(localProgress, start, end),
-  };
+  if (railProgress < 0.72) {
+    return { sourceFormation: "tunnel", targetFormation: "tunnel", progress: 1 };
+  }
+  if (railProgress < 0.88) {
+    return { sourceFormation: "tunnel", targetFormation: "city",   progress: remapProgress(railProgress, 0.72, 0.88) };
+  }
+  return   { sourceFormation: "city",   targetFormation: "city",   progress: 1 };
 }
 
 function updateCamera(
   beat: BeatConfig,
   progress: number,
   time: number,
-  camera: THREE.PerspectiveCamera,
   treeCenter: THREE.Vector3,
   treeMin: number,
   treeHeight: number,
@@ -772,7 +791,7 @@ function updateCamera(
   tunnelAxis: string,
   cityCenter: THREE.Vector3,
   citySize: THREE.Vector3
-) {
+): { position: THREE.Vector3; lookAt: THREE.Vector3; fov: number } {
   const railProgress = THREE.MathUtils.clamp(
     THREE.MathUtils.lerp(beat.railStart, beat.railEnd, progress),
     0,
@@ -831,7 +850,7 @@ function updateCamera(
   ];
 
   const treePos = [
-    new THREE.Vector3(0, treeMin + 0.8, 16),
+    new THREE.Vector3(0, 2.6, 12.5), // matches world-rail fall-curve endpoint → no Y snap
     new THREE.Vector3(0.8, treeMin + treeHeight * 0.18, 13.5),
     new THREE.Vector3(1.4, treeMin + treeHeight * 0.36, 12),
     new THREE.Vector3(7.5, treeMin + treeHeight * 0.48, 14.5),
@@ -866,7 +885,7 @@ function updateCamera(
   ];
 
   const networkPos = [
-    new THREE.Vector3(0, treeMin - 6, 12),
+    new THREE.Vector3(0, treeMin - 14, 9), // matches tree-rail rootsDrop endpoint → no Y snap
     tunnelStart.clone().add(
       new THREE.Vector3(
         tunnelAxis === "x" ? -3 : 0,
@@ -890,7 +909,7 @@ function updateCamera(
     new THREE.Vector3(cityCenter.x + 2, cityCenter.y + citySize.y * 0.14, cityCenter.z + 4),
   ];
   const networkLook = [
-    new THREE.Vector3(0, treeMin - 1.5, 0),
+    new THREE.Vector3(0, treeMin - 4, 0),
     tunnelStart.clone().add(
       new THREE.Vector3(
         tunnelAxis === "x" ? 8 : 0,
@@ -992,7 +1011,7 @@ function updateCamera(
     const travel = remapProgress(railProgress, 0, 0.68, (value) => value);
     const travelPosition = sampleCurve(
       [
-        new THREE.Vector3(0, treeMin - 6, 12),
+        new THREE.Vector3(0, treeMin - 14, 9),
         tunnelStart.clone().add(
           new THREE.Vector3(
             tunnelAxis === "x" ? -4 : 0,
@@ -1008,7 +1027,7 @@ function updateCamera(
     );
     const travelLook = sampleCurve(
       [
-        new THREE.Vector3(0, treeMin - 1.5, 0),
+        new THREE.Vector3(0, treeMin - 4, 0),
         tunnelStart.clone().add(
           new THREE.Vector3(
             tunnelAxis === "x" ? 8 : 0,
@@ -1063,7 +1082,10 @@ function updateCamera(
   }
 
   if (beat.cameraMode === "treeOrbit") {
-    const orbitAngle = smoothStep(progress) * Math.PI * 2;
+    // Start angle ≈ -2.4 rad matches the tree-rail spline direction at beat-12 entry
+    // so the orbit circle begins where the camera actually is, not at an arbitrary angle=0.
+    const ORBIT_START = -2.4;
+    const orbitAngle = ORBIT_START + smoothStep(progress) * Math.PI * 2;
     const radius = 22;
     const orbitPosition = new THREE.Vector3(
       Math.sin(orbitAngle) * radius,
@@ -1075,9 +1097,11 @@ function updateCamera(
       treeMin + treeHeight * 0.35,
       treeCenter.z
     );
-    const blend = 0.78;
-    position.lerp(orbitPosition, blend);
-    lookAt.lerp(orbitLook, blend);
+    // Ramp blend from 0→0.78 over the first 20 % of the beat so the camera
+    // glides into orbit rather than snapping to the orbit circle on frame 1.
+    const introBlend = smoothStep(Math.min(progress / 0.2, 1));
+    position.lerp(orbitPosition, introBlend * 0.78);
+    lookAt.lerp(orbitLook, introBlend * 0.78);
   } else if (beat.cameraMode === "branchesOrbit") {
     const orbitAngle = smoothStep(progress) * Math.PI * 1.2 - Math.PI * 0.25;
     const orbitPosition = new THREE.Vector3(
@@ -1086,7 +1110,8 @@ function updateCamera(
       Math.cos(orbitAngle) * 18
     );
     const orbitLook = new THREE.Vector3(0, treeMin + treeHeight * 0.42, 0);
-    const blend = 0.48 + smoothStep(progress) * 0.24;
+    const introBlend = smoothStep(Math.min(progress / 0.25, 1));
+    const blend = introBlend * (0.48 + smoothStep(progress) * 0.24);
     position.lerp(orbitPosition, blend);
     lookAt.lerp(orbitLook, blend);
   } else if (beat.cameraMode === "rootsDrop") {
@@ -1101,7 +1126,8 @@ function updateCamera(
       treeMin - 1.5 - dropPhase * 4,
       0
     );
-    const blend = 0.55 + dropPhase * 0.25;
+    const introBlend = smoothStep(Math.min(progress / 0.2, 1));
+    const blend = introBlend * (0.55 + dropPhase * 0.25);
     position.lerp(rootsPosition, blend);
     lookAt.lerp(rootsLook, blend);
   }
@@ -1110,25 +1136,21 @@ function updateCamera(
   position.y += Math.sin(time * 0.025) * 0.2;
   lookAt.x += Math.sin(time * 0.03) * 0.18;
 
-  camera.position.copy(position);
-  camera.lookAt(lookAt);
-
-  let desiredFov = beat.rail === "network" ? 58 : beat.rail === "world" ? 61 : 60;
+  let fov = beat.rail === "network" ? 58 : beat.rail === "world" ? 61 : 60;
   if (beat.cameraMode === "planetDive" || beat.cameraMode === "tunnelTravel") {
-    desiredFov = 68;
+    fov = 68;
   } else if (beat.cameraMode === "continentsArrival") {
-    desiredFov = 54;
+    fov = 54;
   } else if (beat.cameraMode === "cityArrival") {
-    desiredFov = 48;
+    fov = 48;
   } else if (beat.cameraMode === "treeOrbit") {
-    desiredFov = 57;
+    fov = 57;
   } else if (beat.cameraMode === "continentsCollapse") {
-    desiredFov = 64;
+    fov = 64;
   } else if (beat.cameraMode === "cityBurst") {
-    desiredFov = 62;
+    fov = 62;
   }
-  camera.fov += (desiredFov - camera.fov) * 0.08;
-  camera.updateProjectionMatrix();
+  return { position, lookAt, fov };
 }
 
 export default ParticleScene;
