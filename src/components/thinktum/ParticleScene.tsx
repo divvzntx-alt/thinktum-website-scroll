@@ -204,9 +204,9 @@ const ParticleScene = ({ scrollState, scrollStateRef }: ParticleSceneProps) => {
     const init = async () => {
       try {
         const [treeResult, tunnelResult, cityResult] = await Promise.all([
-          samplePointsFromFBX("/models/tree.fbx", PARTICLE_COUNT),
-          samplePointsFromFBX("/models/tunnel.fbx", PARTICLE_COUNT),
-          samplePointsFromFBX("/models/city.fbx", PARTICLE_COUNT),
+          samplePointsFromFBX(`${import.meta.env.BASE_URL}models/tree.fbx`, PARTICLE_COUNT),
+          samplePointsFromFBX(`${import.meta.env.BASE_URL}models/tunnel.fbx`, PARTICLE_COUNT),
+          samplePointsFromFBX(`${import.meta.env.BASE_URL}models/city.fbx`, PARTICLE_COUNT),
         ]);
 
         if (disposed) return;
